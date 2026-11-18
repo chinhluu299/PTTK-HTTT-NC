@@ -1,0 +1,260 @@
+@import "tailwindcss";
+
+/*
+  MedCare – hệ thống thiết kế
+  Nguyên tắc: rõ ràng trước, đẹp sau. Một hành động chính mỗi màn hình.
+  Xanh y tế (brand) cho hành động, xanh navy cho khung ứng dụng.
+  Đỏ chỉ dành cho cấp cứu / nguy hiểm. Vàng cam cho cảnh báo. Xanh lá cho hoàn tất.
+  Trạng thái luôn có chữ đi kèm màu, không dùng màu đơn thuần.
+*/
+
+@theme {
+  /* Chữ */
+  --color-ink: #0b1a2b;
+  --color-ink-2: #3e4c5e;
+  --color-ink-3: #66768a;
+  --color-ink-4: #93a0b0;
+
+  /* Viền và nền */
+  --color-line: #e1e6ec;
+  --color-line-2: #edf1f5;
+  --color-line-strong: #c3ccd7;
+  --color-paper: #f4f6f9;
+  --color-paper-2: #eef2f6;
+  --color-surface: #ffffff;
+
+  /* Thương hiệu: xanh y tế */
+  --color-brand: #0b5cab;
+  --color-brand-strong: #084887;
+  --color-brand-tint: #ecf3fb;
+  --color-brand-tint-2: #cfe0f3;
+
+  /* Khung ứng dụng: navy */
+  --color-navy: #0c2136;
+  --color-navy-2: #132d47;
+  --color-navy-3: #1c3a58;
+  --color-navy-ink: #a9b8c9;
+
+  /* Ngữ nghĩa */
+  --color-danger: #c62028;
+  --color-danger-strong: #a0141c;
+  --color-danger-tint: #fdf0f0;
+
+  --color-warn: #8a5300;
+  --color-warn-tint: #fff6e0;
+  --color-warn-line: #edc77a;
+
+  --color-ok: #146c43;
+  --color-ok-tint: #e8f5ee;
+
+  --color-lab: #5a49a6;
+  --color-lab-tint: #f0eefa;
+
+  --color-focus: #0b5cab;
+
+  --font-sans: var(--font-be-vietnam), system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains), ui-monospace, monospace;
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
+
+  --shadow-xs: 0 1px 2px rgba(12, 33, 54, 0.05);
+  --shadow-card: 0 1px 2px rgba(12, 33, 54, 0.04), 0 1px 3px rgba(12, 33, 54, 0.06);
+  --shadow-raised: 0 4px 12px -2px rgba(12, 33, 54, 0.08), 0 2px 4px -2px rgba(12, 33, 54, 0.05);
+  --shadow-pop: 0 24px 48px -12px rgba(12, 33, 54, 0.25);
+}
+
+:root {
+  color-scheme: light;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 15.5px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+h1, h2, h3 {
+  letter-spacing: -0.015em;
+}
+
+::selection {
+  background: var(--color-brand-tint-2);
+}
+
+/* Focus bàn phím: vòng xanh tách khỏi phần tử, thấy được trên nền sáng và nền tối.
+   Đặt trong @layer base để ô nhập (lớp components) dùng kiểu focus riêng của nó. */
+@layer base {
+  :focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+  }
+}
+
+@layer components {
+  /* Nhãn phụ nhỏ phía trên tiêu đề: viết thường, không in hoa */
+  .eyebrow {
+    font-size: 13px;
+    line-height: 18px;
+    font-weight: 500;
+    color: var(--color-ink-3);
+  }
+  /* Tiêu đề cột bảng */
+  .th {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--color-ink-3);
+    text-align: left;
+  }
+  /* Chữ số đều cột cho giờ, tiền, số thứ tự */
+  .num {
+    font-variant-numeric: tabular-nums;
+  }
+  /* Mã khám, số tài khoản, tên đăng nhập: font đơn cách để dễ đọc từng ký tự */
+  .mono {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.01em;
+  }
+  .card {
+    background: var(--color-surface);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-card);
+  }
+  .field-input {
+    width: 100%;
+    min-height: 42px;
+    padding: 9px 12px;
+    background: var(--color-surface);
+    border: 1px solid var(--color-line-strong);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-xs);
+    color: var(--color-ink);
+    font-size: 15.5px;
+    line-height: 1.4;
+    transition: border-color 0.12s, box-shadow 0.12s;
+  }
+  .field-input::placeholder {
+    color: var(--color-ink-4);
+  }
+  .field-input:hover {
+    border-color: #a9b5c3;
+  }
+  .field-input:focus,
+  .field-input:focus-visible {
+    outline: none;
+    border-color: var(--color-brand);
+    box-shadow: 0 0 0 3px rgba(11, 92, 171, 0.16);
+  }
+  .field-input[aria-invalid="true"] {
+    border-color: var(--color-danger);
+  }
+  .field-input[aria-invalid="true"]:focus {
+    box-shadow: 0 0 0 3px rgba(198, 32, 40, 0.14);
+  }
+  .field-input:disabled {
+    background: var(--color-paper);
+    border-color: var(--color-line);
+    box-shadow: none;
+    color: var(--color-ink-3);
+  }
+  .rule {
+    border-top: 1px solid var(--color-line);
+  }
+  .ticket-edge {
+    background-image: radial-gradient(circle at 0 50%, var(--color-paper) 7px, transparent 7.5px),
+      radial-gradient(circle at 100% 50%, var(--color-paper) 7px, transparent 7.5px);
+  }
+}
+
+/* Hoạ tiết trang trí cho góc trống: lưới ô vuông và chấm, mờ dần ở mép */
+.squares,
+.squares-light,
+.dots {
+  -webkit-mask-image: radial-gradient(closest-side, #000 45%, transparent);
+  mask-image: radial-gradient(closest-side, #000 45%, transparent);
+  pointer-events: none;
+}
+.squares {
+  background-image:
+    linear-gradient(var(--color-brand-tint-2) 1px, transparent 1px),
+    linear-gradient(90deg, var(--color-brand-tint-2) 1px, transparent 1px);
+  background-size: 22px 22px;
+}
+.squares-light {
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.1) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.1) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+.dots {
+  background-image: radial-gradient(#b9cfe9 1.4px, transparent 1.6px);
+  background-size: 14px 14px;
+}
+
+/* Hiện dần khi cuộn tới, xem components/reveal.tsx.
+   Không có data-reveal (chưa chạy JS) thì nội dung vẫn hiện bình thường. */
+.reveal[data-reveal="wait"] {
+  opacity: 0;
+  transform: translateY(20px);
+}
+.reveal[data-reveal="in"] {
+  transition: opacity 0.7s cubic-bezier(0.2, 0.7, 0.2, 1), transform 0.7s cubic-bezier(0.2, 0.7, 0.2, 1);
+  transition-delay: var(--reveal-delay, 0ms);
+}
+
+/* Vào trang: chữ trồi lên lần lượt, ảnh thu nhẹ về đúng cỡ */
+@keyframes rise {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: none; }
+}
+.rise {
+  animation: rise 0.7s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  animation-delay: var(--d, 0ms);
+}
+@keyframes settle {
+  from { transform: scale(1.08); }
+  to { transform: scale(1); }
+}
+.settle {
+  animation: settle 1.8s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+
+@keyframes pulse-ring {
+  0% { box-shadow: 0 0 0 0 rgba(198, 32, 40, 0.45); }
+  100% { box-shadow: 0 0 0 14px rgba(198, 32, 40, 0); }
+}
+.pulse-danger {
+  animation: pulse-ring 1.6s ease-out infinite;
+}
+
+@keyframes slide-up {
+  from { transform: translateY(6px); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+.enter {
+  animation: slide-up 0.18s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pulse-danger, .enter, .rise, .settle { animation: none; }
+  .reveal[data-reveal] { opacity: 1; transform: none; transition: none; }
+}
+
+@media print {
+  body { background: #fff; }
+  .no-print { display: none !important; }
+  .reveal[data-reveal] { opacity: 1 !important; transform: none !important; }
+}
