@@ -90,7 +90,10 @@ export interface Visit extends Appointment {
 
 export interface AppointmentDetail extends Appointment {
   patient: { full_name: string; phone: string };
-  payment?: { amount: number; content: string; bank_name: string; account: string; account_name: string; vietqr: string; server_now: string };
+  payment?: {
+    provider: "PAYOS" | "DEMO"; amount: number; content: string; bank_name: string | null; account: string | null;
+    account_name: string | null; vietqr: string | null; checkout_url: string | null; error: string | null; server_now: string;
+  };
   deposit_paid: number; refund_pending: boolean; can_cancel: boolean; refundable: boolean;
   queue: { number: number; status: string; call_count: number; ahead: number } | null;
   visit?: Visit;

@@ -274,7 +274,7 @@ def main():
         return a
 
     def pay_deposit(a, when):
-        db.add(Payment(appointment_id=a.id, kind="DEPOSIT", amount=a.deposit_amount, method="VIETQR", gateway="SEPAY",
+        db.add(Payment(appointment_id=a.id, kind="DEPOSIT", amount=a.deposit_amount, method="PAYOS", gateway="PAYOS",
                        gateway_txn_id=f"SEED:{a.code}", status="SUCCESS", content=a.code, created_at=when))
 
     # ── Lịch sử 8 tuần (cho thống kê) ──

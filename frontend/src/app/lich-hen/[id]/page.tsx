@@ -1,11 +1,11 @@
 "use client";
 import Link from "next/link";
-import { useParams, useRouter } from "next/navigation";
-import { Suspense, useCallback, useEffect, useState } from "react";
-import { CalendarX2, Check, CircleCheck, Copy, FlaskConical, Pill, TriangleAlert } from "lucide-react";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { CalendarX2, Check, CircleCheck, Copy, ExternalLink, FlaskConical, Pill, TriangleAlert } from "lucide-react";
 import { PatientShell } from "@/components/patient-shell";
 import { QR } from "@/components/brand";
-import { Alert, Button, Dialog, Forbidden, KV, Panel, Spinner, StatusTag, Steps, cx } from "@/components/ui";
+import { Alert, Button, Dialog, Forbidden, KV, LinkButton, Panel, Spinner, StatusTag, Steps, cx } from "@/components/ui";
 import { VisitBody } from "@/components/visit-view";
 import { toast } from "@/components/toast";
 import { ApiError, api, errMsg } from "@/lib/api";
@@ -53,6 +53,27 @@ function AppointmentPage() {
   const live = a && ["HOLD", "CHECKED_IN", "IN_CONSULTATION", "WAITING_LAB", "COMPLETED"].includes(a.status);
   usePoll(load, a?.status === "HOLD" ? 3000 : 8000, !!live);
 
+  // Hỏi payOS trạng thái đơn cọc: khi quay lại từ trang thanh toán, và định kỳ khi webhook chưa tới (vd. chạy localhost)
+  const check = useCallback(async (quiet = true) => {
+    try {
+      setA(await api<AppointmentDetail>(`/api/appointments/${id}/payment/check`, { auth: "patient", method: "POST" }));
+    } catch (e) {
+      if (!quiet) toast(errMsg(e), { tone: "danger" });
+    }
+  }, [id]);
+  usePoll(check, 5000, a?.status === "HOLD" && a.payment?.provider === "PAYOS" && !!a.payment.checkout_url);
+
+  const returned = useSearchParams().get("payment");
+  const handledReturn = useRef(false);
+  useEffect(() => {
+    if (!a || !returned || handledReturn.current) return;
+    handledReturn.current = true;
+    if (returned === "cancel") toast("Bạn đã hủy thanh toán trên payOS. Chỗ vẫn được giữ đến khi hết giờ.", { tone: "info" });
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- check() bất đồng bộ: setState chạy sau await
+    else check(false);
+    router.replace(`/lich-hen/${id}`, { scroll: false });
+  }, [a, returned, check, router, id]);
+
   if (err) return <PatientShell>{err.status === 403 ? <Forbidden message={err.msg} /> : <Alert tone="danger">{err.msg}</Alert>}</PatientShell>;
   if (!a) return <PatientShell><Spinner /></PatientShell>;
 
@@ -72,7 +93,7 @@ function AppointmentPage() {
       </div>
 
       {a.leave_conflict && a.status === "CONFIRMED" && <LeaveConflict a={a} onChange={setA} />}
-      {a.status === "HOLD" && <Payment a={a} reload={load} />}
+      {a.status === "HOLD" && <Payment a={a} reload={load} check={() => check(false)} />}
       {a.status === "CONFIRMED" && !a.leave_conflict && <Confirmed a={a} onChange={setA} />}
       {["CHECKED_IN", "IN_CONSULTATION", "WAITING_LAB"].includes(a.status) && <InClinic a={a} />}
       {a.status === "COMPLETED" && a.queue && <QueueTicket a={a} />}
@@ -87,7 +108,7 @@ function AppointmentPage() {
   );
 }
 
-function Payment({ a, reload }: { a: AppointmentDetail; reload: () => void }) {
+function Payment({ a, reload, check }: { a: AppointmentDetail; reload: () => void; check: () => void }) {
   const cfg = useConfig();
   const now = useNow(500);
   const [offset] = useState(() => (a.payment ? new Date(a.payment.server_now).getTime() - Date.now() : 0));
@@ -116,7 +137,7 @@ function Payment({ a, reload }: { a: AppointmentDetail; reload: () => void }) {
     return (
       <Alert tone="warn" title="Hết thời gian giữ chỗ">
         Chỗ đã được trả lại. Nếu bạn đã chuyển khoản, hệ thống vẫn ghi nhận và tự khôi phục lịch nếu khung giờ còn chỗ.
-        <div className="mt-3 flex gap-2"><Button size="sm" variant="secondary" onClick={reload}>Kiểm tra lại</Button></div>
+        <div className="mt-3 flex gap-2"><Button size="sm" variant="secondary" onClick={check}>Kiểm tra lại</Button></div>
       </Alert>
     );
   }
@@ -137,18 +158,33 @@ function Payment({ a, reload }: { a: AppointmentDetail; reload: () => void }) {
           <li><b className="num mr-1">2.</b> Quét mã bên cạnh. Số tiền và nội dung đã được điền sẵn.</li>
           <li><b className="num mr-1">3.</b> Giữ nguyên nội dung chuyển khoản. Trang này tự cập nhật khi tiền về.</li>
         </ol>
+        {p.error && (
+          <Alert tone="danger" className="mb-4" title="Chưa tạo được mã thanh toán">
+            {p.error}
+            <div className="mt-3"><Button size="sm" variant="secondary" onClick={reload}>Thử lại</Button></div>
+          </Alert>
+        )}
         <dl className="divide-y divide-line-2 rounded-md border border-line">
           <Row k="Số tiền" v={<span className="num text-[20px] font-bold">{vnd(p.amount)}</span>} />
           <Row k="Nội dung" v={<span className="mono text-[18px] font-bold tracking-wider">{p.content}</span>} copy={p.content} />
-          <Row k="Ngân hàng" v={p.bank_name} />
-          <Row k="Số tài khoản" v={<span className="mono">{p.account}</span>} copy={p.account} />
-          <Row k="Chủ tài khoản" v={p.account_name} />
+          {p.bank_name && <Row k="Ngân hàng" v={p.bank_name} />}
+          {p.account && <Row k="Số tài khoản" v={<span className="mono">{p.account}</span>} copy={p.account} />}
+          {p.account_name && <Row k="Chủ tài khoản" v={p.account_name} />}
         </dl>
       </Panel>
       <div className="flex flex-col items-center gap-3 self-start rounded-lg border border-line bg-surface shadow-card p-5">
-        <p className="eyebrow">VietQR</p>
-        <QR value={p.vietqr} size={240} label={`Mã VietQR chuyển ${p.amount} đồng, nội dung ${p.content}`} />
+        <p className="eyebrow">{p.provider === "PAYOS" ? "VietQR · payOS" : "VietQR"}</p>
+        {p.vietqr ? (
+          <QR value={p.vietqr} size={240} label={`Mã VietQR chuyển ${p.amount} đồng, nội dung ${p.content}`} />
+        ) : (
+          <div className="flex size-[240px] items-center justify-center rounded-md bg-paper text-center text-sm text-ink-3">Chưa có mã QR</div>
+        )}
         <p className="text-center text-sm text-ink-3">Quét bằng app ngân hàng bất kỳ hỗ trợ VietQR</p>
+        {p.checkout_url && (
+          <LinkButton href={p.checkout_url} variant="secondary" size="sm" block>
+            Thanh toán trên trang payOS<ExternalLink className="size-4" aria-hidden />
+          </LinkButton>
+        )}
         {cfg?.payment_dev_mode && (
           <div className="mt-2 w-full rounded-md border border-dashed border-line-strong bg-paper p-3">
             <p className="text-[12.5px] font-semibold text-ink-3">Môi trường thử nghiệm</p>

@@ -4,16 +4,15 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from .. import booking
-from ..booking import get_setting
+from .. import booking, payos
 from ..config import settings
 from ..db import get_db
 from ..models import Appointment, Patient, PharmacyQueue, Specialty, TriageSession
+from ..realtime import broker
 from ..security import current_patient
 from ..serializers import appt_brief, visit_summary
 from ..state import audit, transition
 from ..utils import now, slot_start, today
-from ..vietqr import build_payload
 
 router = APIRouter(prefix="/api", tags=["F2 – Đặt lịch"])
 
@@ -87,14 +86,7 @@ def _detail(db: Session, a: Appointment) -> dict:
     d = appt_brief(a)
     d["patient"] = {"full_name": a.patient.full_name, "phone": a.patient.phone}
     if a.status == "HOLD":
-        bank_bin = get_setting(db, "bank_bin", "970422")
-        account = get_setting(db, "bank_account", "0000000000")
-        d["payment"] = {
-            "amount": a.deposit_amount, "content": a.code, "bank_name": get_setting(db, "bank_name", "MB Bank"),
-            "account": account, "account_name": get_setting(db, "bank_account_name", "PHONG KHAM MEDCARE"),
-            "vietqr": build_payload(bank_bin, account, a.deposit_amount, a.code),
-            "server_now": now().isoformat(),
-        }
+        d["payment"] = booking.deposit_info(db, a)
     d["deposit_paid"] = sum(x.amount for x in a.payments if x.kind == "DEPOSIT" and x.status == "SUCCESS")
     d["refund_pending"] = any(x.status == "REFUND_PENDING" for x in a.payments)
     d["can_cancel"] = a.status in ("HOLD", "CONFIRMED")
@@ -135,12 +127,28 @@ def detail(appt_id: int, p: Patient = Depends(current_patient), db: Session = De
     return _detail(db, _own(db, appt_id, p))
 
 
+@router.post("/appointments/{appt_id}/payment/check")
+def check_payment(appt_id: int, p: Patient = Depends(current_patient), db: Session = Depends(get_db)):
+    """Tra trạng thái đơn cọc trên payOS (khi bệnh nhân quay lại từ trang thanh toán, hoặc webhook chưa tới)."""
+    a = _own(db, appt_id, p)
+    if a.status in ("HOLD", "EXPIRED"):
+        try:
+            res = booking.sync_deposit(db, a)
+        except payos.PayOSError as e:
+            raise HTTPException(502, str(e))
+        if res and res.get("appointment_id") and res["result"] != "duplicate":
+            broker.publish(f"patient:{a.patient_id}", "appointment_updated", {"appointment_id": a.id})
+        db.refresh(a)
+    return _detail(db, a)
+
+
 @router.post("/appointments/{appt_id}/cancel")
 def cancel(appt_id: int, p: Patient = Depends(current_patient), db: Session = Depends(get_db)):
     """QĐ05: hủy trước giờ hẹn ≥ 12 giờ được hoàn cọc; hủy muộn hơn -> NO_SHOW, không hoàn cọc.
     Lịch bị ảnh hưởng do bác sĩ nghỉ thì luôn được hoàn cọc."""
     a = _own(db, appt_id, p)
     if a.status == "HOLD":
+        booking.cancel_deposit_link(db, a)
         transition(db, a, "CANCELLED", "PATIENT", p.id, p.full_name, reason="Bệnh nhân hủy khi đang giữ chỗ")
     elif a.status == "CONFIRMED":
         early = slot_start(a.date, a.slot) - now() >= timedelta(hours=settings.refund_min_hours)

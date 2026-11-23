@@ -19,8 +19,12 @@ class Settings(BaseSettings):
     openai_model: str = "qwen3.5-9b"
     llm_timeout: int = 60              # giây; model suy luận (Qwen3.x) có thể trả lời chậm
 
-    # F2 – thanh toán (SePay webhook). payment_dev_mode bật nút "giả lập chuyển khoản".
-    sepay_api_key: str = "dev-sepay-key"
+    # F2 – thanh toán cọc qua payOS. payos_domain: địa chỉ frontend cho returnUrl/cancelUrl (trống = frontend_url).
+    # payment_dev_mode bật nút "giả lập chuyển khoản"; chưa cấu hình payOS thì dùng VietQR tĩnh để demo.
+    payos_client_id: str = ""
+    payos_api_key: str = ""
+    payos_checksum_key: str = ""
+    payos_domain: str = ""
     payment_dev_mode: bool = True
 
     # Cloudinary: để trống thì lưu file vào thư mục uploads/

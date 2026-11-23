@@ -1,17 +1,17 @@
-"""F2 – Đặt lịch giữ chỗ 5 phút, chống đặt trùng, webhook thanh toán idempotent, xử lý bác sĩ nghỉ."""
-import re
+"""F2 – Đặt lịch giữ chỗ 5 phút, chống đặt trùng, thanh toán cọc qua payOS (idempotent), xử lý bác sĩ nghỉ."""
+import secrets
 from datetime import date, timedelta
 
 from fastapi import HTTPException
 from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from . import emailer
+from . import emailer, payos
 from .config import settings
 from .models import Appointment, Payment, Staff, StaffLeave, SystemSetting
 from .state import audit, transition
 from .utils import SLOTS, gen_code, is_working_day, leave_covers, now, slot_start, today, working_days
+from .vietqr import build_payload
 
 # Trạng thái chiếm chỗ (QĐ02: tính cả HOLD chưa hết hạn)
 OCCUPYING = ("CONFIRMED", "CHECKED_IN", "IN_CONSULTATION", "WAITING_LAB", "COMPLETED", "PAID")
@@ -169,43 +169,101 @@ def create_hold(db: Session, patient_id: int, specialty_id: int, doctor_id: int,
         raise
 
 
-# ───────────────────────── Thanh toán ─────────────────────────
+# ───────────────────────── Thanh toán cọc (payOS) ─────────────────────────
+# Mỗi lịch HOLD có một dòng PAYMENTS trạng thái PENDING gắn với một đơn payOS; gateway_txn_id = "PAYOS:<orderCode>"
+# (ràng buộc duy nhất). Webhook / tra trạng thái chỉ xử lý dòng còn PENDING, nên nhận trùng không ghi nhận hai lần.
 
-CODE_RE = re.compile(r"[A-Z0-9]{12}")
-
-
-def find_code(content: str, db: Session) -> Appointment | None:
-    for m in CODE_RE.finditer((content or "").upper()):
-        # Khóa dòng lịch hẹn để job hết hạn (skip_locked) không chen vào giữa
-        appt = db.query(Appointment).filter(Appointment.code == m.group(0)).with_for_update().first()
-        if appt:
-            return appt
-    return None
+BANKS = {"970422": "MB Bank", "970436": "Vietcombank", "970415": "VietinBank", "970418": "BIDV",
+         "970405": "Agribank", "970407": "Techcombank", "970416": "ACB", "970432": "VPBank", "970423": "TPBank",
+         "970403": "Sacombank"}
 
 
-def process_bank_transfer(db: Session, gateway: str, txn_id: str, amount: int, content: str, raw: dict) -> dict:
-    """Xử lý tiền về. Idempotent nhờ ràng buộc duy nhất trên gateway_txn_id."""
-    from .billing import invoice  # tránh import vòng
-    pay = Payment(kind="DEPOSIT", amount=amount, method="VIETQR", gateway=gateway,
-                  gateway_txn_id=f"{gateway}:{txn_id}", status="UNMATCHED", content=content[:255], raw_payload=raw)
-    db.add(pay)
+def _order_ref(order_code: int) -> str:
+    return f"PAYOS:{order_code}"
+
+
+def _new_order_code(db: Session) -> int:
+    """payOS cần orderCode là số nguyên dương, duy nhất trên toàn bộ tài khoản merchant."""
+    for _ in range(10):
+        code = 100_000_000 + secrets.randbelow(900_000_000)
+        if not db.query(Payment.id).filter(Payment.gateway_txn_id == _order_ref(code)).first():
+            return code
+    raise HTTPException(500, "Không tạo được mã đơn thanh toán")
+
+
+def pending_deposit(appt: Appointment) -> Payment | None:
+    return next((p for p in reversed(appt.payments)
+                 if p.gateway == "PAYOS" and p.kind == "DEPOSIT" and p.status == "PENDING"), None)
+
+
+def deposit_order(db: Session, appt: Appointment, *, offline: bool = False) -> Payment:
+    """Lấy hoặc tạo đơn thanh toán cọc. Đã cấu hình payOS thì tạo link thật (hết hạn cùng lúc với giữ chỗ);
+    chưa cấu hình (hoặc offline=True) thì chỉ tạo đơn nội bộ để demo bằng nút giả lập."""
+    pay = pending_deposit(appt)
+    if pay:
+        return pay
+    code = _new_order_code(db)
+    description = f"Coc {appt.code}"
+    link = {}
+    if payos.is_configured() and not offline:
+        base = (settings.payos_domain or settings.frontend_url).rstrip("/")
+        link = payos.create_payment_link(
+            order_code=code, amount=appt.deposit_amount, description=description,
+            return_url=f"{base}/lich-hen/{appt.id}?payment=success",
+            cancel_url=f"{base}/lich-hen/{appt.id}?payment=cancel",
+            expired_at=int(appt.hold_expires_at.timestamp()) if appt.hold_expires_at else None)
+    pay = Payment(kind="DEPOSIT", amount=appt.deposit_amount, method="PAYOS", gateway="PAYOS",
+                  gateway_txn_id=_order_ref(code), status="PENDING", content=link.get("description") or description,
+                  raw_payload={"order_code": code, "link": link})
+    appt.payments.append(pay)
+    db.flush()
+    return pay
+
+
+def deposit_info(db: Session, appt: Appointment) -> dict:
+    """Thông tin chuyển khoản cọc hiển thị cho bệnh nhân khi lịch đang HOLD."""
+    info = {"provider": "PAYOS" if payos.is_configured() else "DEMO", "amount": appt.deposit_amount,
+            "content": appt.code, "bank_name": None, "account": None, "account_name": None, "vietqr": None,
+            "checkout_url": None, "error": None, "server_now": now().isoformat()}
+    if not appt.hold_expires_at or appt.hold_expires_at <= now():
+        return info
     try:
-        db.flush()
-    except IntegrityError:
+        pay = deposit_order(db, appt)
+        db.commit()
+    except payos.PayOSError as e:
         db.rollback()
-        return {"result": "duplicate", "message": "Giao dịch đã được ghi nhận trước đó, bỏ qua"}
+        info["error"] = f"Chưa tạo được mã thanh toán payOS: {e}"
+        return info
+    link = (pay.raw_payload or {}).get("link") or {}
+    if link:
+        bin_ = str(link.get("bin") or "")
+        info.update(content=pay.content, vietqr=link.get("qrCode"), checkout_url=link.get("checkoutUrl"),
+                    account=link.get("accountNumber"), account_name=link.get("accountName"),
+                    bank_name=BANKS.get(bin_) or (get_setting(db, "bank_name") if bin_ == get_setting(db, "bank_bin")
+                                                  else f"Ngân hàng (BIN {bin_})"))
+    else:  # chưa cấu hình payOS: VietQR tĩnh tới tài khoản phòng khám, xác nhận bằng nút giả lập
+        account = get_setting(db, "bank_account", "0000000000")
+        info.update(content=pay.content, account=account,
+                    bank_name=get_setting(db, "bank_name", "MB Bank"),
+                    account_name=get_setting(db, "bank_account_name", "PHONG KHAM MEDCARE"),
+                    vietqr=build_payload(get_setting(db, "bank_bin", "970422"), account, appt.deposit_amount,
+                                         pay.content))
+    return info
 
-    appt = find_code(content, db)
-    if not appt:
-        db.commit()
-        return {"result": "unmatched", "message": "Không tìm thấy mã khám trong nội dung chuyển khoản"}
-    pay.appointment_id = appt.id
 
-    # Thanh toán cuối ca bằng VietQR tại quầy thuốc
-    if appt.status == "COMPLETED":
-        pay.kind, pay.status = "FINAL", "SUCCESS"
-        db.commit()
-        return {"result": "final_received", "appointment_id": appt.id, "due_after": invoice(db, appt)["due"]}
+def confirm_deposit(db: Session, order_code: int, amount: int, reference: str, raw: dict) -> dict:
+    """payOS báo đơn đã thanh toán (webhook hoặc tra trạng thái). Idempotent: chỉ xử lý đơn còn PENDING."""
+    pay = db.query(Payment).filter(Payment.gateway_txn_id == _order_ref(order_code)).with_for_update().first()
+    if not pay:
+        return {"result": "unmatched", "message": "Không tìm thấy đơn thanh toán"}
+    if pay.status != "PENDING":
+        return {"result": "duplicate", "appointment_id": pay.appointment_id,
+                "message": "Giao dịch đã được ghi nhận trước đó, bỏ qua"}
+    # Khóa dòng lịch hẹn để job hết hạn (skip_locked) không chen vào giữa
+    appt = db.query(Appointment).filter(Appointment.id == pay.appointment_id).with_for_update().one()
+    pay.amount = amount
+    pay.note = f"Mã giao dịch {reference}" if reference else None
+    pay.raw_payload = {**(pay.raw_payload or {}), "paid": raw}
 
     if amount != appt.deposit_amount:
         pay.status = "AMOUNT_MISMATCH"
@@ -215,7 +273,7 @@ def process_bank_transfer(db: Session, gateway: str, txn_id: str, amount: int, c
 
     if appt.status == "HOLD" and appt.hold_expires_at and appt.hold_expires_at > now():
         pay.status = "SUCCESS"
-        transition(db, appt, "CONFIRMED", "GATEWAY", reason=f"Nhận cọc {amount:,}đ – {gateway} {txn_id}")
+        transition(db, appt, "CONFIRMED", "GATEWAY", reason=f"Nhận cọc {amount:,}đ qua payOS – đơn {order_code}")
         db.commit()
         send_confirmation(db, appt)
         return {"result": "confirmed", "appointment_id": appt.id}
@@ -239,11 +297,44 @@ def process_bank_transfer(db: Session, gateway: str, txn_id: str, amount: int, c
             db.commit()
             return {"result": "refund_pending", "appointment_id": appt.id}
 
-    # Đã CONFIRMED / đã hủy... mà vẫn chuyển thêm -> chờ hoàn
+    # Đã hủy... mà vẫn chuyển tiền -> chờ hoàn
     pay.status = "REFUND_PENDING"
     pay.note = f"Nhận tiền khi lịch đang ở trạng thái {appt.status}"
     db.commit()
     return {"result": "refund_pending", "appointment_id": appt.id}
+
+
+def sync_deposit(db: Session, appt: Appointment) -> dict | None:
+    """Hỏi payOS trạng thái đơn cọc đang chờ – dùng khi webhook không tới được (vd. chạy trên localhost)."""
+    pay = pending_deposit(appt)
+    if not pay or not payos.is_configured() or not (pay.raw_payload or {}).get("link"):
+        return None
+    order_code = pay.raw_payload["order_code"]
+    info = payos.get_payment_info(order_code)
+    status = info.get("status")
+    if status == "PAID":
+        tx = (info.get("transactions") or [{}])[0]
+        return confirm_deposit(db, order_code, int(info.get("amountPaid") or info.get("amount") or 0),
+                               str(tx.get("reference") or ""), info)
+    if status in ("CANCELLED", "EXPIRED"):
+        pay.status = "CANCELLED"
+        pay.note = f"Link payOS {status}"
+        db.commit()
+    return None
+
+
+def cancel_deposit_link(db: Session, appt: Appointment):
+    """Bệnh nhân hủy khi đang giữ chỗ: hủy link payOS. Chỉ đánh dấu CANCELLED khi payOS xác nhận đã hủy
+    (link đã được trả tiền thì payOS từ chối, webhook sau đó sẽ chuyển khoản tiền sang chờ hoàn)."""
+    pay = pending_deposit(appt)
+    if not pay or not payos.is_configured() or not (pay.raw_payload or {}).get("link"):
+        return
+    try:
+        payos.cancel_payment_link(pay.raw_payload["order_code"], "Benh nhan huy lich")
+    except payos.PayOSError:
+        return
+    pay.status = "CANCELLED"
+    pay.note = "Bệnh nhân hủy lịch khi đang giữ chỗ"
 
 
 def send_confirmation(db: Session, appt: Appointment):
